@@ -1,0 +1,51 @@
+name: Daily DB Backup
+
+# Backs up the Supabase database to Google Drive every day:
+#   - Excel workbook (one sheet per table)
+#   - Gzipped SQL INSERT dump (restorable)
+# Then deletes backups older than RETENTION_DAYS from the Drive folder.
+#
+# Uses Supabase REST API (service_role key) — no DB password needed.
+# A daily run also keeps the free Supabase project from auto-pausing.
+
+on:
+  schedule:
+    - cron: "0 1 * * *" # 01:00 UTC daily (~03:00/04:00 Israel time)
+  workflow_dispatch: {} # allow manual runs from the Actions tab
+
+concurrency:
+  group: db-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    # If this repo is mirrored/pushed to more than one GitHub remote, the
+    # workflow file exists on each, so the schedule fires on all of them and the
+    # ones without secrets FAIL. Uncomment and set this to the repo that holds
+    # the secrets — the others then skip (green) instead of failing:
+    # if: github.repository == 'OWNER/REPO'
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install backup script deps
+        working-directory: scripts/backup
+        run: npm install --no-audit --no-fund
+
+      - name: Run backup
+        working-directory: scripts/backup
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+          RETENTION_DAYS: "14"
+          BACKUP_PREFIX: "PROJECT_NAME"  # <-- שנה לשם הפרויקט
+        run: node backup.mjs

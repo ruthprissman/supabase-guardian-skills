@@ -1,0 +1,13 @@
+{
+  "name": "project-backup",
+  "private": true,
+  "type": "module",
+  "description": "Daily Supabase → Google Drive backup (Excel + SQL dump). Uses REST API, no DB password needed.",
+  "scripts": {
+    "backup": "node backup.mjs",
+    "get-token": "node get-refresh-token.mjs"
+  },
+  "dependencies": {
+    "exceljs": "^4.4.0"
+  }
+}
