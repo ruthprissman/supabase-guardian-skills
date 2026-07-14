@@ -36,14 +36,14 @@
 
 **Windows (PowerShell):**
 ```powershell
-git clone <REPO_URL>
+git clone https://github.com/ruthprissman/supabase-guardian-skills.git
 cd supabase-guardian-skills
 .\install.ps1
 ```
 
 **Mac / Linux:**
 ```bash
-git clone <REPO_URL>
+git clone https://github.com/ruthprissman/supabase-guardian-skills.git
 cd supabase-guardian-skills
 chmod +x install.sh && ./install.sh
 ```
