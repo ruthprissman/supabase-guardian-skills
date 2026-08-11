@@ -1,0 +1,14 @@
+{
+  "name": "supabase-guardian",
+  "displayName": "Supabase Guardian",
+  "description": "Security auditing, daily Google Drive backups, and free-tier keep-alive for Supabase projects.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Ruth Prissman",
+    "url": "https://github.com/ruthprissman"
+  },
+  "homepage": "https://github.com/ruthprissman/supabase-guardian-skills",
+  "repository": "https://github.com/ruthprissman/supabase-guardian-skills",
+  "license": "MIT",
+  "keywords": ["supabase", "security", "backup", "monitoring", "database", "edge-functions"]
+}

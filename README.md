@@ -1,7 +1,9 @@
 # 🛡️ Supabase Guardian Skills
 
-שלושה **Claude Code Skills** שמגנים על פרויקט Supabase — אבטחה, גיבוי, ומניעת הקפאה.
+שלושה **Agent Skills** (בפורמט הפתוח `SKILL.md` — עובד ב-Claude Code, Codex CLI ועוד) שמגנים על פרויקט Supabase — אבטחה, גיבוי, ומניעת הקפאה.
 מיועדים בעיקר לפרויקטים על התוכנית החינמית (free tier) של Supabase, שבה אין גיבויים מובנים והפרויקט קופא אחרי חוסר פעילות.
+
+זמין גם כ-**Claude Code Plugin** רשמי — התקנה בשתי פקודות, ראו למטה.
 
 ---
 
@@ -19,7 +21,7 @@
 
 ## דרישות מוקדמות
 
-- **[Claude Code](https://claude.com/claude-code)** מותקן (הסקילים רצים בתוכו).
+- **[Claude Code](https://claude.com/claude-code)** או **[Codex CLI](https://developers.openai.com/codex)** מותקן (הסקילים רצים בתוכם).
 - פרויקט **Supabase** (הסקילים מכוונים ל-Supabase + Edge Functions).
 - ל-backup ול-keep-alive: ריפו ב-**GitHub** עם הרשאת **Admin** (בשביל Secrets ו-Actions).
 
@@ -27,12 +29,20 @@
 
 ## התקנה
 
-הסקילים צריכים לשבת בתיקיית הסקילים של Claude Code:
-`~/.claude/skills/` (ב-Windows: `%USERPROFILE%\.claude\skills\`).
+### אפשרות א' — Claude Code Plugin (הכי מהיר, מומלץ)
 
-### אפשרות א' — התקנה אוטומטית (מומלץ)
+בתוך Claude Code:
 
-הורידו/שכפלו את הריפו, ואז:
+```
+/plugin marketplace add ruthprissman/supabase-guardian-skills
+/plugin install supabase-guardian@supabase-guardian
+```
+
+זהו — שלושת הסקילים נטענים אוטומטית וזמינים כ-`/supabase-guardian:security-code-review` וכו' (וגם מזוהים בשמם הרגיל, למשל "תעשה security review"). לעדכון גרסה: `/plugin update supabase-guardian`.
+
+### אפשרות ב' — סקריפט התקנה (Claude Code + Codex CLI)
+
+מתאים גם למי שרוצה את הסקילים כ-Skills רגילים בלי מנגנון הפלאגין, וגם למי שעובד עם **Codex CLI** (שקורא את אותו פורמט `SKILL.md`). הסקריפט מזהה אוטומטית אם יש אצלכם `~/.claude` ו/או `~/.codex` ומתקין לשניהם.
 
 **Windows (PowerShell):**
 ```powershell
@@ -48,21 +58,21 @@ cd supabase-guardian-skills
 chmod +x install.sh && ./install.sh
 ```
 
-הסקריפט מעתיק את שלושת הסקילים ל-`~/.claude/skills/`. **אתחלו את Claude Code** אחרי ההתקנה כדי שיטענו.
+**אתחלו את הסוכן** (Claude Code / Codex) אחרי ההתקנה כדי שהסקילים ייטענו.
 
-### אפשרות ב' — התקנה ידנית
+### אפשרות ג' — התקנה ידנית
 
-העתיקו את שלוש התיקיות שמתחת ל-`skills/` לתוך תיקיית הסקילים שלכם:
+העתיקו את שלוש התיקיות שמתחת ל-`skills/` לתוך תיקיית הסקילים של הסוכן שלכם:
 
 ```
-~/.claude/skills/security-code-review/
-~/.claude/skills/supabase-drive-backup/
-~/.claude/skills/supabase-keep-alive/
+~/.claude/skills/security-code-review/      (Claude Code)
+~/.codex/skills/security-code-review/       (Codex CLI)
+... וכן הלאה לשלושת הסקילים
 ```
 
 ### לבדוק שזה עבד
 
-פתחו Claude Code והקלידו `/` — שלושת הסקילים אמורים להופיע ברשימה. או פשוט בקשו "תעשה security review" והסקיל יתחיל לעבוד.
+פתחו את הסוכן והקלידו `/` — שלושת הסקילים אמורים להופיע ברשימה. או פשוט בקשו "תעשה security review" והסקיל יתחיל לעבוד.
 
 ---
 
@@ -107,9 +117,12 @@ chmod +x install.sh && ./install.sh
 ```
 supabase-guardian-skills/
 ├── README.md
-├── install.ps1                 ← מתקין ל-Windows
-├── install.sh                  ← מתקין ל-Mac/Linux
+├── install.ps1                 ← מתקין ל-Windows (Claude Code + Codex)
+├── install.sh                  ← מתקין ל-Mac/Linux (Claude Code + Codex)
 ├── LICENSE
+├── .claude-plugin/
+│   ├── plugin.json             ← מניפסט הפלאגין
+│   └── marketplace.json        ← מאפשר /plugin marketplace add על הריפו הזה
 └── skills/
     ├── security-code-review/
     │   ├── SKILL.md
