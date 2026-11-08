@@ -12,7 +12,7 @@
 | Skill | מה הוא עושה | מתי מפעילים |
 |-------|-------------|-------------|
 | 🔐 **security-code-review** | סקירת אבטחה של הקוד: RLS policies, Edge Functions, secrets חשופים, auth flows ואינטגרציית Brevo. מדרג ממצאים לפי חומרה ומציע תיקונים. | "תעשה security review", "תבדוק אבטחה", "check security" |
-| 💾 **supabase-drive-backup** | גיבוי יומי אוטומטי של ה-DB ל-Google Drive — קובץ Excel (גיליון לכל טבלה) + SQL dump דחוס, עם מחיקת גיבויים ישנים. | "תגדיר גיבוי", "backup the DB" |
+| 💾 **supabase-drive-backup** | גיבוי יומי אוטומטי של ה-DB ל-Google Drive — קובץ Excel (גיליון לכל טבלה) + SQL dump דחוס, **מוצפנים ב-AES-256 לפני ההעלאה**, עם מחיקת גיבויים ישנים וסקריפט שמוודא שהגיבוי באמת נפתח. | "תגדיר גיבוי", "backup the DB" |
 | ⏰ **supabase-keep-alive** | מונע הקפאה של פרויקט Supabase חינמי — כותב heartbeat ל-DB כל 3 ימים, וגם מונע השבתה של ה-GitHub workflow אחרי 60 יום. | "תמנע הקפאה", "keep alive" |
 
 הכל מבוסס על **REST API עם service_role key** — בלי סיסמת DB, בלי חשיפת secrets בקוד.
@@ -90,8 +90,8 @@ chmod +x install.sh && ./install.sh
 מבקשים מ-Claude Code להגדיר גיבוי, והוא יעביר אתכם צעד-צעד. בגדול:
 1. מעתיקים את הקבצים מ-`assets/` לריפו (`scripts/backup/` + `.github/workflows/backup.yml`).
 2. יוצרים תיקיית Google Drive + OAuth client (Desktop) ומפיקים `refresh_token`.
-3. מוסיפים **6 GitHub Secrets**: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `GDRIVE_FOLDER_ID`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN`.
-4. מריצים את ה-workflow ידנית לאימות.
+3. מוסיפים **7 GitHub Secrets**: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `GDRIVE_FOLDER_ID`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN`, ו-`BACKUP_ENCRYPTION_KEY` (מפתח ההצפנה, שנשמר **גם מחוץ ל-GitHub**, במנהל סיסמאות).
+4. מריצים את ה-workflow ידנית, ומוודאים עם `verify-backup.sh` שהגיבוי נפתח עם המפתח השמור.
 
 הגיבוי רץ כל יום ב-01:00 UTC ושומר 14 יום אחורה. הפרטים המלאים ב-[`skills/supabase-drive-backup/SKILL.md`](skills/supabase-drive-backup/SKILL.md).
 
@@ -129,7 +129,7 @@ supabase-guardian-skills/
     │   └── references/         ← OWASP, Edge Functions, Brevo
     ├── supabase-drive-backup/
     │   ├── SKILL.md
-    │   └── assets/            ← backup.mjs, workflow, package.json
+    │   └── assets/            ← backup.mjs, workflow, package.json, verify-backup.sh, RETROFIT-PROMPT.md
     └── supabase-keep-alive/
         └── SKILL.md
 ```

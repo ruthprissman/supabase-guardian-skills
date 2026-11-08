@@ -1,8 +1,14 @@
 // Daily Supabase → Google Drive backup.
 //
-// Produces two artifacts and uploads them to a Google Drive folder:
-//   1. <prefix>_<date>.xlsx     — one worksheet per public table (human-readable)
-//   2. <prefix>_<date>.sql.gz   — SQL INSERT dump (schema + data, restorable)
+// Produces two artifacts, ENCRYPTS both, and uploads them to a Google Drive folder:
+//   1. <prefix>_<date>.xlsx.enc    — one worksheet per public table (human-readable)
+//   2. <prefix>_<date>.sql.gz.enc  — SQL INSERT dump (data only, no schema: restorable into
+//                                     existing, empty tables)
+//
+// Encryption is MANDATORY and the plaintext never reaches Drive. A backup is a
+// full copy of the production database in one file, sitting in ordinary cloud
+// storage; encrypted, a leaked folder is worthless to whoever finds it.
+// Losing BACKUP_ENCRYPTION_KEY makes every backup in Drive permanently unreadable.
 //
 // Uses Supabase REST API (service_role key) — no database password needed.
 // Then deletes any backup it previously created in that folder older than
@@ -15,10 +21,13 @@
 //   GOOGLE_CLIENT_SECRET
 //   GOOGLE_REFRESH_TOKEN
 //   GDRIVE_FOLDER_ID           — id of the Drive folder to upload into
+//   BACKUP_ENCRYPTION_KEY      — passphrase for AES-256 (openssl enc). Generate
+//                                with `openssl rand -base64 48`; copy kept OFF GitHub.
 // Optional env:
 //   RETENTION_DAYS             — default 14
 //   BACKUP_PREFIX              — default "project-backup"
 
+import { spawnSync } from "node:child_process";
 import { createWriteStream } from "node:fs";
 import { readFile, stat, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -34,9 +43,22 @@ const {
   GOOGLE_CLIENT_SECRET,
   GOOGLE_REFRESH_TOKEN,
   GDRIVE_FOLDER_ID,
+  BACKUP_ENCRYPTION_KEY,
   RETENTION_DAYS = "14",
   BACKUP_PREFIX = "project-backup",
 } = process.env;
+
+// Trimmed, and that is load-bearing — not tidiness.
+//
+// `-pass env:` hands openssl the variable VERBATIM, trailing newline included,
+// whereas `openssl enc -d`'s interactive password prompt STRIPS the newline off
+// whatever is pasted into it. So a secret saved with a stray trailing newline
+// encrypts under a DIFFERENT passphrase than the one a human later types at the
+// prompt — an endless `bad decrypt` against a key that looks perfectly correct,
+// with no way to tell the difference by eye. Verified in both directions.
+//
+// Trimming here makes the two paths agree no matter how the secret was pasted.
+const ENCRYPTION_KEY = (BACKUP_ENCRYPTION_KEY ?? "").trim();
 
 function requireEnv() {
   const missing = [
@@ -46,9 +68,18 @@ function requireEnv() {
     "GOOGLE_CLIENT_SECRET",
     "GOOGLE_REFRESH_TOKEN",
     "GDRIVE_FOLDER_ID",
+    // No unencrypted fallback: a missing key must stop the run, never quietly
+    // ship a plaintext copy of the whole database to Drive.
+    "BACKUP_ENCRYPTION_KEY",
   ].filter((k) => !process.env[k]);
   if (missing.length) {
     console.error(`Missing required env vars: ${missing.join(", ")}`);
+    process.exit(1);
+  }
+  // A whitespace-only secret is truthy above but empty once trimmed — catch it
+  // here rather than silently encrypting under an empty passphrase.
+  if (!ENCRYPTION_KEY) {
+    console.error("BACKUP_ENCRYPTION_KEY is empty after trimming whitespace");
     process.exit(1);
   }
 }
@@ -77,10 +108,22 @@ async function getPublicTables() {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/`, { headers: restHeaders() });
   if (!res.ok) throw new Error(`OpenAPI spec failed: ${res.status} ${await res.text()}`);
   const spec = await res.json();
-  return Object.keys(spec.paths || {})
+  const tables = Object.keys(spec.paths || {})
     .map((p) => p.replace(/^\//, ""))
     .filter((t) => t && !t.includes("/") && !t.includes("{"))
     .sort();
+  const columnTypes = new Map(
+    tables.map((t) => [
+      t,
+      Object.fromEntries(
+        Object.entries(spec.definitions?.[t]?.properties ?? {}).map(([c, p]) => [
+          c,
+          p.format ?? "",
+        ]),
+      ),
+    ]),
+  );
+  return { tables, columnTypes };
 }
 
 async function fetchAllRows(tableName) {
@@ -156,17 +199,44 @@ async function buildExcel(tables, outPath) {
 
 // ---- SQL dump (INSERT-based) -----------------------------------------------
 
-function sqlLiteral(v) {
+// PostgREST returns an array column (text[], uuid[]…) as a JSON array, and its
+// JSON text is a malformed array literal to Postgres: write {…} instead. Only for
+// a column whose OpenAPI type (pgType) ends in [] — a json/jsonb array stays JSON.
+// In json[] / jsonb[] each element is a JSON value, written as its JSON text: a
+// string keeps its quotes, and a JSON array is ONE element (PostgREST sends a 2-D
+// jsonb[] and a 1-D jsonb[] of JSON arrays alike; only the 1-D reading always
+// loads). box[] is the one standard type whose elements are separated by ";".
+function pgArrayLiteral(arr, pgType) {
+  const json = pgType === "json[]" || pgType === "jsonb[]";
+  const element = (x) => {
+    if (x === null || x === undefined) return "NULL";
+    if (Array.isArray(x) && !json) return pgArrayLiteral(x, pgType);
+    const s = json || typeof x === "object" ? JSON.stringify(x) : String(x);
+    return `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+  };
+  return `{${arr.map(element).join(pgType === "box[]" ? ";" : ",")}}`;
+}
+
+function sqlLiteral(v, pgType = "") {
   if (v === null || v === undefined) return "NULL";
+  // Not always a string: for a column the spec lacks, types[c] can be a member
+  // the types object inherits ("constructor").
+  const t = typeof pgType === "string" ? pgType : "";
+  // json / jsonb take JSON text even for a string, number or boolean value:
+  // 'present', a bare 5 or TRUE would not load.
+  if (t === "json" || t === "jsonb") return `'${JSON.stringify(v).replace(/'/g, "''")}'`;
   if (typeof v === "boolean") return v ? "TRUE" : "FALSE";
   if (typeof v === "number") return String(v);
+  if (Array.isArray(v) && t.endsWith("[]")) {
+    return `'${pgArrayLiteral(v, t).replace(/'/g, "''")}'`;
+  }
   if (typeof v === "object") {
     return `'${JSON.stringify(v).replace(/'/g, "''")}'`;
   }
   return `'${String(v).replace(/'/g, "''")}'`;
 }
 
-async function buildSqlDump(tables, outPath) {
+async function buildSqlDump(tables, columnTypes, outPath) {
   const lines = [];
   lines.push("-- SQL dump generated by backup script");
   lines.push(`-- Date: ${new Date().toISOString()}`);
@@ -174,6 +244,10 @@ async function buildSqlDump(tables, outPath) {
   lines.push("");
   lines.push("SET client_encoding = 'UTF8';");
   lines.push("SET standard_conforming_strings = on;");
+  // The tables come in name order, not FK order, so loading them into empty
+  // tables fails on a child that sorts before its parent. Replica mode, as in
+  // Supabase's own data-only dumps, skips the FK checks and the triggers.
+  lines.push("SET session_replication_role = replica;");
   lines.push("");
 
   for (const tableName of tables) {
@@ -187,14 +261,17 @@ async function buildSqlDump(tables, outPath) {
     const cols = Object.keys(rows[0]);
     const quotedTable = `"${tableName}"`;
     const quotedCols = cols.map((c) => `"${c}"`).join(", ");
+    const types = columnTypes.get(tableName) ?? {};
 
     lines.push(`-- Data for table: ${tableName} (${rows.length} rows)`);
     for (const row of rows) {
-      const vals = cols.map((c) => sqlLiteral(row[c])).join(", ");
+      const vals = cols.map((c) => sqlLiteral(row[c], types[c])).join(", ");
       lines.push(`INSERT INTO ${quotedTable} (${quotedCols}) VALUES (${vals});`);
     }
     lines.push("");
   }
+  lines.push("SET session_replication_role = DEFAULT;");
+  lines.push("");
 
   const content = lines.join("\n");
   const gzip = createGzip({ level: 9 });
@@ -202,6 +279,54 @@ async function buildSqlDump(tables, outPath) {
   gzip.end(Buffer.from(content, "utf8"));
   await pipeline(gzip, out);
   log(`SQL dump written: ${outPath}`);
+}
+
+// ---- Encryption ------------------------------------------------------------
+
+// AES-256-CBC via the `openssl` CLI rather than node:crypto, deliberately: the
+// restore path must not depend on this repo still existing. `openssl enc -d` is a
+// one-liner that works from any machine with Git for Windows / macOS / Linux,
+// years from now, with nothing checked out. Hand-rolled crypto here would mean
+// the decryptor lives in the very repo a disaster might take with it.
+//
+// PBKDF2 at 600k iterations (OWASP's SHA-256 figure) is belt-and-braces — the key
+// we document is 48 random bytes, so it is not brute-forceable anyway — but it
+// keeps the file safe if someone later swaps in a human-chosen passphrase.
+//
+// Decrypt with:
+//   openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -in <file>.enc -out <file>
+async function encryptFile(inPath, key) {
+  const outPath = `${inPath}.enc`;
+  const res = spawnSync(
+    "openssl",
+    [
+      "enc",
+      "-aes-256-cbc",
+      "-pbkdf2",
+      "-iter",
+      "600000",
+      "-salt",
+      "-in",
+      inPath,
+      "-out",
+      outPath,
+      // Read the passphrase from the environment, never argv — argv is visible to
+      // every other process on the machine via /proc.
+      "-pass",
+      "env:BACKUP_ENCRYPTION_KEY",
+    ],
+    { env: { ...process.env, BACKUP_ENCRYPTION_KEY: key } },
+  );
+  if (res.status !== 0) {
+    const err = res.stderr ? res.stderr.toString() : "(no stderr)";
+    throw new Error(`openssl enc failed (exit ${res.status}): ${err}`);
+  }
+  // Drop the plaintext the moment the ciphertext exists — not at the end of
+  // main(), which never runs if an upload throws.
+  await unlink(inPath);
+  const size = (await stat(outPath)).size;
+  log(`Encrypted → ${path.basename(outPath)} (${(size / 1024).toFixed(0)}KB)`);
+  return outPath;
 }
 
 // ---- Google Drive (REST, no SDK) ------------------------------------------
@@ -301,29 +426,29 @@ async function main() {
   const sqlPath = path.join(tmpdir(), `${BACKUP_PREFIX}_${stamp}.sql.gz`);
 
   log(`Fetching table list from ${SUPABASE_URL}…`);
-  const tables = await getPublicTables();
+  const { tables, columnTypes } = await getPublicTables();
   log(`Found ${tables.length} tables: ${tables.join(", ")}`);
 
   log("Building Excel…");
   await buildExcel(tables, xlsxPath);
 
   log("Building SQL dump…");
-  await buildSqlDump(tables, sqlPath);
+  await buildSqlDump(tables, columnTypes, sqlPath);
 
   const xlsxSize = (await stat(xlsxPath)).size;
   const sqlSize = (await stat(sqlPath)).size;
   log(`Artifacts: xlsx ${(xlsxSize / 1024).toFixed(0)}KB, sql.gz ${(sqlSize / 1024).toFixed(0)}KB`);
 
+  const xlsxEnc = await encryptFile(xlsxPath, ENCRYPTION_KEY);
+  const sqlEnc = await encryptFile(sqlPath, ENCRYPTION_KEY);
+
   const token = await getAccessToken();
-  await uploadFile(
-    token,
-    xlsxPath,
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-  );
-  await uploadFile(token, sqlPath, "application/gzip");
+  await uploadFile(token, xlsxEnc, "application/octet-stream");
+  await uploadFile(token, sqlEnc, "application/octet-stream");
   await deleteOldBackups(token);
 
-  await Promise.allSettled([unlink(xlsxPath), unlink(sqlPath)]);
+  // Best-effort local cleanup (the plaintext is already gone — see encryptFile).
+  await Promise.allSettled([unlink(xlsxEnc), unlink(sqlEnc)]);
   log("Backup complete ✓");
 }
 
